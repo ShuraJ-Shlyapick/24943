@@ -1,319 +1,414 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/resource.h>
-#include <limits.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
 
-typedef enum {
-    OPT_SUCCESS = 0,
-    OPT_ERROR_INVALID_VALUE = -1,
-    OPT_ERROR_NEGATIVE_VALUE = -2,
-    OPT_ERROR_MISSING_ARGUMENT = -3,
-    OPT_ERROR_INVALID_FORMAT = -4
-} OptionResult;
+void print_user_group_ids() {
+    printf("=== User and Group IDs ===\n");
+    printf("Real User ID (RUID): %d\n", getuid());
+    printf("Effective User ID (EUID): %d\n", geteuid());
+    printf("Real Group ID (RGID): %d\n", getgid());
+    printf("Effective Group ID (EGID): %d\n", getegid());
+}
 
-typedef struct {
-    int opt;
-    char *arg;
-} Option;
+void become_process_group_leader() {
+    printf("=== Process Group Leadership ===\n");
+    if (setpgid(0, 0) == 0) {
+        printf("Became new process group leader. New PGID: %d\n", getpgrp());
+    } else {
+        perror("Error setting group leader");
+    }
+}
 
-long safe_strtol(const char *str, const char *option_name) {
-    if (!str) {return OPT_ERROR_MISSING_ARGUMENT;}
+void print_process_ids() {
+    printf("=== Process Identification ===\n");
+    printf("Process ID (PID): %d\n", getpid());
+    printf("Parent Process ID (PPID): %d\n", getppid());
+    printf("Process Group ID (PGID): %d\n", getpgrp());
+}
 
+void print_process_limit() {
+    printf("=== Process Limit (ulimit -u) ===\n");
+    struct rlimit rlim;
+    
+    if (getrlimit(RLIMIT_CPU, &rlim) == 0) {
+        printf("Max processes: ");
+        if (rlim.rlim_cur == RLIM_INFINITY) {
+            printf("unlimited\n");
+        } else {
+            printf("%ld\n", (long)rlim.rlim_cur);
+        }
+    } else {
+        perror("Error getting process limit");
+    }
+}
+
+void print_file_size_limit() {
+    printf("=== File Size Limit (ulimit -f) ===\n");
+    struct rlimit rlim;
+    
+    if (getrlimit(RLIMIT_FSIZE, &rlim) == 0) {
+        printf("Max file size: ");
+        if (rlim.rlim_cur == RLIM_INFINITY) {
+            printf("unlimited\n");
+        } else {
+            printf("%ld bytes\n", (long)rlim.rlim_cur);
+        }
+    } else {
+        perror("Error getting file size limit");
+    }
+}
+
+void print_data_size_limit() {
+    printf("=== Data Size Limit (ulimit -d) ===\n");
+    struct rlimit rlim;
+    
+    if (getrlimit(RLIMIT_DATA, &rlim) == 0) {
+        printf("Max data segment size: ");
+        if (rlim.rlim_cur == RLIM_INFINITY) {
+            printf("unlimited\n");
+        } else {
+            printf("%ld bytes\n", (long)rlim.rlim_cur);
+        }
+    } else {
+        perror("Error getting data limit");
+    }
+}
+
+void print_stack_size_limit() {
+    printf("=== Stack Size Limit (ulimit -s) ===\n");
+    struct rlimit rlim;
+    
+    if (getrlimit(RLIMIT_STACK, &rlim) == 0) {
+        printf("Max stack size: ");
+        if (rlim.rlim_cur == RLIM_INFINITY) {
+            printf("unlimited\n");
+        } else {
+            printf("%ld bytes\n", (long)rlim.rlim_cur);
+        }
+    } else {
+        perror("Error getting stack limit");
+    }
+}
+
+int set_file_size_limit(const char *value) {
+    printf("=== Setting File Size Limit ===\n");
+    struct rlimit rlim;
+    long new_limit;
     char *endptr;
-    errno = 0;
-    long val = strtol(str, &endptr, 10);
-
-    if (errno != 0) {
-        fprintf(stderr, "Error converting '%s' for %s: ", str, option_name);
-        perror("");
-        return OPT_ERROR_INVALID_VALUE;
-    }
     
+    new_limit = strtol(value, &endptr, 10);
+    
+    if (endptr == value) {
+        fprintf(stderr, "Error: '%s' is not a number\n", value);
+        return -1;
+    }
     if (*endptr != '\0') {
-        fprintf(stderr, "Invalid numeric value for %s: '%s'\n", option_name, str);
-        return OPT_ERROR_INVALID_VALUE;
+        fprintf(stderr, "Error: non-numeric chars in '%s'\n", value);
+        return -1;
+    }
+    if (new_limit < 0) {
+        fprintf(stderr, "Error: ulimit cannot be negative\n");
+        return -1;
     }
     
-    if (val < 0) {
-        fprintf(stderr, "Value for %s must be non-negative: '%s'\n", option_name, str);
-        return OPT_ERROR_NEGATIVE_VALUE;
+    if (getrlimit(RLIMIT_FSIZE, &rlim) != 0) {
+        perror("Error getting current ulimit");
+        return -1;
     }
     
-    return val;
-}
-
-void free_options(Option *opts, int count) {
-    if (!opts) return;
-    
-    for (int i = 0; i < count; i++) {free(opts[i].arg);}
-    free(opts);
-}
-
-void print_error(const char *context, OptionResult result) {
-    const char *message = "Unknown error";
-    
-    switch (result) {
-        case OPT_ERROR_MISSING_ARGUMENT:
-            message = "Missing required argument";
-            break;
-        case OPT_ERROR_INVALID_VALUE:
-            message = "Invalid value";
-            break;
-        case OPT_ERROR_NEGATIVE_VALUE:
-            message = "Value must be non-negative";
-            break;
-        case OPT_ERROR_INVALID_FORMAT:
-            message = "Invalid format";
-            break;
-        default:
-            return; 
+    rlim.rlim_cur = (rlim_t)new_limit;
+    if (setrlimit(RLIMIT_FSIZE, &rlim) != 0) {
+        perror("Error setting ulimit");
+        return -1;
     }
     
-    fprintf(stderr, "%s: %s\n", context, message);
+    printf("File size limit set: %ld bytes\n", new_limit);
+    return 0;
 }
 
-OptionResult handle_i(void) {
-    uid_t ruid = getuid();
-    uid_t euid = geteuid();
-    gid_t rgid = getgid();
-    gid_t egid = getegid();
+int set_process_limit(const char *value) {
+    printf("=== Setting Process Limit ===\n");
+    struct rlimit rlim;
+    long new_limit;
+    char *endptr;
     
-    printf("Real UID: %d, Effective UID: %d\n", ruid, euid);
-    printf("Real GID: %d, Effective GID: %d\n", rgid, egid);
+    new_limit = strtol(value, &endptr, 10);
     
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_s(void) {
-    if (setpgid(0, 0) == -1) {
-        perror("setpgid");
-        return OPT_ERROR_INVALID_VALUE;
+    if (endptr == value) {
+        fprintf(stderr, "Error: '%s' is not a number\n", value);
+        return -1;
+    }
+    if (*endptr != '\0') {
+        fprintf(stderr, "Error: non-numeric chars in '%s'\n", value);
+        return -1;
+    }
+    if (new_limit < 0) {
+        fprintf(stderr, "Error: process limit cannot be negative\n");
+        return -1;
     }
     
-    printf("Process became process group leader.\n");
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_p(void) {
-    pid_t pid = getpid();
-    pid_t ppid = getppid();
-    pid_t pgid = getpgid(0);
-    
-    printf("PID: %d, PPID: %d, PGID: %d\n", pid, ppid, pgid);
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_u(void) {
-    struct rlimit rl;
-    
-    // В Solaris используем RLIMIT_NOFILE вместо RLIMIT_NPROC
-    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) {
-        perror("getrlimit");
-        return OPT_ERROR_INVALID_VALUE;
+    if (getrlimit(RLIMIT_CPU, &rlim) != 0) {
+        perror("Error getting current process limit");
+        return -1;
     }
     
-    printf("Maximum number of open files (ulimit -n): %ld\n", (long)rl.rlim_cur);
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_c(void) {
-    struct rlimit rl;
-    
-    if (getrlimit(RLIMIT_CORE, &rl) != 0) {
-        perror("getrlimit");
-        return OPT_ERROR_INVALID_VALUE;
+    rlim.rlim_cur = (rlim_t)new_limit;
+    if (setrlimit(RLIMIT_CPU, &rlim) != 0) {
+        perror("Error setting process limit");
+        return -1;
     }
     
-    printf("Core file size: %ld bytes\n", (long)rl.rlim_cur);
-    return OPT_SUCCESS;
+    printf("Process limit set: %ld\n", new_limit);
+    return 0;
 }
 
-OptionResult handle_U(const char *arg) {
-    if (!arg) {return OPT_ERROR_MISSING_ARGUMENT;}
+void print_core_size() {
+    printf("=== Core File Size Limit (ulimit -c) ===\n");
+    struct rlimit rlim;
     
-    long size = safe_strtol(arg, "ulimit option");
-    if (size < 0) { return (OptionResult)size;}
+    if (getrlimit(RLIMIT_CORE, &rlim) == 0) {
+        printf("Max core file size: ");
+        if (rlim.rlim_cur == RLIM_INFINITY) {
+            printf("unlimited\n");
+        } else {
+            printf("%ld bytes\n", (long)rlim.rlim_cur);
+        }
+    } else {
+        perror("Error getting core file size");
+    }
+}
+
+int set_core_size(const char *value) {
+    printf("=== Setting Core File Size ===\n");
+    struct rlimit rlim;
+    long new_size;
+    char *endptr;
     
-    struct rlimit rl = {
-        .rlim_cur = (rlim_t)size,
-        .rlim_max = (rlim_t)size
-    };
+    new_size = strtol(value, &endptr, 10);
     
-    // В Solaris изменяем лимит открытых файлов
-    if (setrlimit(RLIMIT_NOFILE, &rl) == -1) {
-        perror("setrlimit");
-        return OPT_ERROR_INVALID_VALUE;
+    if (endptr == value) {
+        fprintf(stderr, "Error: '%s' is not a number\n", value);
+        return -1;
+    }
+    if (*endptr != '\0') {
+        fprintf(stderr, "Error: non-numeric chars in '%s'\n", value);
+        return -1;
+    }
+    if (new_size < 0) {
+        fprintf(stderr, "Error: core file size cannot be negative\n");
+        return -1;
     }
     
-    printf("Maximum open files set to %ld\n", size);
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_C(const char *arg) {
-    if (!arg) {return OPT_ERROR_MISSING_ARGUMENT;}
-    
-    long size = safe_strtol(arg, "core limit option");
-    if (size < 0) { return (OptionResult)size;}
-    
-    struct rlimit rl = {
-        .rlim_cur = (rlim_t)size,
-        .rlim_max = (rlim_t)size
-    };
-    
-    if (setrlimit(RLIMIT_CORE, &rl) == -1) {
-        perror("setrlimit");
-        return OPT_ERROR_INVALID_VALUE;
+    if (getrlimit(RLIMIT_CORE, &rlim) != 0) {
+        perror("Error getting current core size");
+        return -1;
     }
     
-    printf("Core file size set to %ld bytes.\n", size);
-    return OPT_SUCCESS;
-}
-
-OptionResult handle_d(void) {
-    char cwd[PATH_MAX];
-    
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
-        perror("getcwd");
-        return OPT_ERROR_INVALID_VALUE;
+    rlim.rlim_cur = (rlim_t)new_size;
+    if (setrlimit(RLIMIT_CORE, &rlim) != 0) {
+        perror("Error setting core size");
+        return -1;
     }
     
-    printf("Current working directory: %s\n", cwd);
-    return OPT_SUCCESS;
+    printf("Core file size set: %ld bytes\n", new_size);
+    return 0;
 }
 
-OptionResult handle_v(void) {
+void print_environment() {
+    printf("=== Environment Variables ===\n");
     extern char **environ;
     
-    for (char **env = environ; *env != NULL; env++) {printf("%s\n", *env);}
+    if (environ == NULL || environ[0] == NULL) {
+        printf("No environment variables\n");
+        return;
+    }
     
-    return OPT_SUCCESS;
+    char **env = environ;
+    int count = 0;
+    
+    while (*env != NULL && count < 10) {
+        printf("%d: %s\n", ++count, *env);
+        env++;
+    }
+    if (*env != NULL) {
+        printf("... (more variables)\n");
+    }
 }
 
-OptionResult handle_V(const char *arg) {
-    if (!arg) {return OPT_ERROR_MISSING_ARGUMENT;}
+int set_environment_variable(const char *name_value) {
+    printf("=== Setting Environment Variable ===\n");
     
-    char *eq = strchr(arg, '=');
-    if (!eq || eq == arg) {return OPT_ERROR_INVALID_FORMAT;}
-    
-    char *arg_copy = strdup(arg);
-    if (!arg_copy) {
-        perror("strdup");
-        return OPT_ERROR_INVALID_VALUE;
+    if (name_value == NULL || strlen(name_value) == 0) {
+        fprintf(stderr, "Error: empty env var string\n");
+        return -1;
     }
     
-    eq = strchr(arg_copy, '=');
-    *eq = '\0';
-    
-    const char *name = arg_copy;
-    const char *value = eq + 1;
-    
-    OptionResult result = OPT_SUCCESS;
-    if (setenv(name, value, 1) == -1) {
-        perror("setenv");
-        result = OPT_ERROR_INVALID_VALUE;
-    } else {
-        printf("Environment variable set: %s=%s\n", name, value);
+    char *equals = strchr(name_value, '=');
+    if (equals == NULL || equals == name_value) {
+        fprintf(stderr, "Error: format must be 'name=value', got: '%s'\n", 
+                name_value ? name_value : "NULL");
+        return -1;
     }
     
-    free(arg_copy);
-    return result;
+    size_t name_len = equals - name_value;
+    char *name = malloc(name_len + 1);
+    if (name == NULL) {
+        perror("Memory allocation error");
+        return -1;
+    }
+    
+    strncpy(name, name_value, name_len);
+    name[name_len] = '\0';
+    char *value = equals + 1;
+    
+    if (setenv(name, value, 1) != 0) {
+        perror("Error setting env var");
+        free(name);
+        return -1;
+    }
+    
+    printf("Env var set: %s=%s\n", name, value);
+    free(name);
+    return 0;
+}
+
+typedef struct {
+    char option;
+    char *argument;
+} command_option_t;
+
+int parse_options_right_to_left(int argc, char *argv[], command_option_t **options) {
+    *options = malloc(argc * sizeof(command_option_t));
+    if (*options == NULL) {
+        perror("Memory allocation error");
+        return -1;
+    }
+    
+    int count = 0;
+    
+    for (int i = argc - 1; i >= 1; i--) {
+        if (argv[i][0] != '-' || strlen(argv[i]) != 2) {
+            continue;
+        }
+        
+        char opt = argv[i][1];
+        
+        if (strchr("ispucdvf", opt) != NULL) {
+            (*options)[count].option = opt;
+            (*options)[count].argument = NULL;
+            count++;
+        }
+        else if (opt == 'U' || opt == 'C' || opt == 'V' || opt == 'P' || opt == 'F' || opt == 'D' || opt == 'S') {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                fprintf(stderr, "Error: option -%c requires argument\n", opt);
+                continue;
+            }
+            
+            (*options)[count].option = opt;
+            (*options)[count].argument = argv[i + 1];
+            count++;
+            i--;
+        }
+        else {
+            fprintf(stderr, "Warning: unknown option -%c\n", opt);
+        }
+    }
+    
+    return count;
 }
 
 int main(int argc, char *argv[]) {
-    Option *opts = NULL;
-    int opt_count = 0;
-    int opt_capacity = 10;
-    int exit_code = EXIT_SUCCESS;
-
-    opts = malloc(opt_capacity * sizeof(Option));
-    if (!opts) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
+    command_option_t *options = NULL;
+    int option_count = parse_options_right_to_left(argc, argv, &options);
+    
+    if (option_count < 0) {
+        fprintf(stderr, "Error parsing options\n");
+        return 1;
     }
+    
+    printf("Processing %d options right to left...\n\n", option_count);
 
-    int opt;
-    while ((opt = getopt(argc, argv, "ispucC:U:d:vV:")) != -1) {
-        if (opt_count >= opt_capacity) {
-            opt_capacity *= 2;
-            Option *tmp = realloc(opts, opt_capacity * sizeof(Option));
-            if (!tmp) {
-                perror("realloc");
-                free_options(opts, opt_count);
-                exit(EXIT_FAILURE);
-            }
-            opts = tmp;
-        }
-        
-        opts[opt_count].opt = opt;
-        opts[opt_count].arg = optarg ? strdup(optarg) : NULL;
-        opt_count++;
-    }
-
-    for (int i = opt_count - 1; i >= 0; i--) {
-        OptionResult result = OPT_SUCCESS;
-        const char *option_name = NULL;
-        
-        switch (opts[i].opt) {
-            case 'i': 
-                result = handle_i(); 
-                option_name = "-i";
+    for (int i = 0; i < option_count; i++) {
+        switch (options[i].option) {
+            case 'i':
+                print_user_group_ids();
                 break;
-            case 's': 
-                result = handle_s(); 
-                option_name = "-s";
+            case 's':
+                become_process_group_leader();
                 break;
-            case 'p': 
-                result = handle_p(); 
-                option_name = "-p";
+            case 'p':
+                print_process_ids();
                 break;
-            case 'u': 
-                result = handle_u(); 
-                option_name = "-u";
+            case 'u':
+                print_process_limit();
                 break;
-            case 'c': 
-                result = handle_c(); 
-                option_name = "-c";
+            case 'f':
+                print_file_size_limit();
                 break;
-            case 'U': 
-                result = handle_U(opts[i].arg); 
-                option_name = "-U";
+            case 'd':
+                print_data_size_limit();
                 break;
-            case 'C': 
-                result = handle_C(opts[i].arg); 
-                option_name = "-C";
+            case 'c':
+                print_core_size();
                 break;
-            case 'd': 
-                result = handle_d(); 
-                option_name = "-d";
+            case 'U':
+                if (options[i].argument != NULL) {
+                    set_process_limit(options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -U requires value\n");
+                }
                 break;
-            case 'v': 
-                result = handle_v(); 
-                option_name = "-v";
+            case 'F':
+                if (options[i].argument != NULL) {
+                    set_file_size_limit(options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -F requires value\n");
+                }
                 break;
-            case 'V': 
-                result = handle_V(opts[i].arg); 
-                option_name = "-V";
+            case 'D':
+                if (options[i].argument != NULL) {
+                    printf("Setting data limit: %s\n", options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -D requires value\n");
+                }
                 break;
-            case '?':
-                exit_code = EXIT_FAILURE;
-                continue;
+            case 'C':
+                if (options[i].argument != NULL) {
+                    set_core_size(options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -C requires value\n");
+                }
+                break;
+            case 'S':
+                if (options[i].argument != NULL) {
+                    printf("Setting stack limit: %s\n", options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -S requires value\n");
+                }
+                break;
+            case 'v':
+                print_environment();
+                break;
+            case 'V':
+                if (options[i].argument != NULL) {
+                    set_environment_variable(options[i].argument);
+                } else {
+                    fprintf(stderr, "Error: -V requires value\n");
+                }
+                break;
             default:
-                fprintf(stderr, "Unknown option: %c\n", opts[i].opt);
-                exit_code = EXIT_FAILURE;
-                continue;
+                fprintf(stderr, "Unknown option: -%c\n", options[i].option);
+                break;
         }
-        
-        if (result != OPT_SUCCESS && option_name) {
-            print_error(option_name, result);
-            exit_code = EXIT_FAILURE;
-        }
+        printf("\n");
     }
 
-    free_options(opts, opt_count);
-    return exit_code;
+    free(options);
+    return 0;
 }
